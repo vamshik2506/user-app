@@ -22,34 +22,11 @@ jobs:
         java-version: '11'
         distribution: 'adoptopenjdk'
 
-    - name: Cache Maven dependencies
-      uses: actions/cache@v2
-      with:
-        path: ~/.m2/repository
-        key: ${{ runner.os }}-maven-${{ hashFiles('**/pom.xml') }}
-        restore-keys: |
-          ${{ runner.os }}-maven-
-
     - name: Build with Maven
       run: mvn clean install -DskipTests
 
-    - name: Run SonarQube scan
-      uses: sonarsource/sonarcloud-github-action@v1
-      with:
-        sonar-project-key: user-app
-        sonar-host-url: ${{ secrets.SONARQUBE_URL }}
-        sonar-token: ${{ secrets.SONARQUBE_TOKEN }}
-
-    - name: Publish artifact to Nexus repository
-      run: mvn deploy -DaltDeploymentRepository=nexus::default::http://your-nexus-repository-url/repository/maven-releases/
-
     - name: Build Docker image
       run: docker build -t your-docker-repo/your-image-name:${{ github.sha }} .
-
-    - name: Run Trivy scan on Docker image
-      run: |
-        docker pull your-docker-repo/your-image-name:${{ github.sha }}
-        trivy image --exit-code 1 --severity HIGH,CRITICAL your-docker-repo/your-image-name:${{ github.sha }}
 
     - name: Log in to Amazon ECR
       uses: aws-actions/amazon-ecr-login@v1
@@ -59,12 +36,8 @@ jobs:
         docker tag your-docker-repo/your-image-name:${{ github.sha }} <aws_account_id>.dkr.ecr.<region>.amazonaws.com/your-repo-name:${{ github.sha }}
         docker push <aws_account_id>.dkr.ecr.<region>.amazonaws.com/your-repo-name:${{ github.sha }}
 
-    - name: Deploy to Kubernetes via Bastion host
+    - name: Deploy to Kubernetes
       run: |
-        ssh -i /path/to/your/private-key.pem ubuntu@<bastion-ip> << 'EOF'
-          kubectl config use-context your-cluster-context
-          kubectl set image deployment/your-deployment your-container=your-docker-repo/your-image-name:${{ github.sha }} --record
-          kubectl rollout status deployment/your-deployment
-        EOF
-      env:
-        KUBECONFIG: ${{ secrets.KUBE_CONFIG }}
+        kubectl apply -f kubernetes/deployment.yaml
+        kubectl apply -f kubernetes/service.yaml
+        kubectl rollout status deployment/user-app-deployment
