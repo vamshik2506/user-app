@@ -1,43 +1,70 @@
-name: CI/CD Pipeline
+name: CI/CD Pipeline for User App
 
 on:
   push:
-    branches:
-      - main
-  pull_request:
     branches:
       - main
 
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
-    - name: Checkout code
+    - name: Checkout Code
       uses: actions/checkout@v2
 
-    - name: Set up Java
+    # Step 1: Build with Maven
+    - name: Set up JDK 17
       uses: actions/setup-java@v2
       with:
-        java-version: '11'
+        java-version: '17'
         distribution: 'adoptopenjdk'
 
     - name: Build with Maven
-      run: mvn clean install -DskipTests
+      run: mvn clean install
 
-    - name: Build Docker image
-      run: docker build -t your-docker-repo/your-image-name:${{ github.sha }} .
-
-    - name: Log in to Amazon ECR
-      uses: aws-actions/amazon-ecr-login@v1
-
-    - name: Push Docker image to ECR
+    # Step 2: SonarQube Analysis
+    - name: SonarQube Analysis
+      env:
+        SONARQUBE_TOKEN: ${{ secrets.SONARQUBE_TOKEN }}
       run: |
-        docker tag your-docker-repo/your-image-name:${{ github.sha }} <aws_account_id>.dkr.ecr.<region>.amazonaws.com/your-repo-name:${{ github.sha }}
-        docker push <aws_account_id>.dkr.ecr.<region>.amazonaws.com/your-repo-name:${{ github.sha }}
+        mvn sonar:sonar -Dsonar.projectKey=user-app -Dsonar.host.url=http://<your-sonarqube-ec2-ip>:9000 -Dsonar.login=$SONARQUBE_TOKEN
 
-    - name: Deploy to Kubernetes
+    # Step 3: Push Artifact to Nexus Repository
+    - name: Push Artifact to Nexus
+      env:
+        NEXUS_REPO_URL: ${{ secrets.NEXUS_REPO_URL }}
+        NEXUS_USERNAME: ${{ secrets.NEXUS_USERNAME }}
+        NEXUS_PASSWORD: ${{ secrets.NEXUS_PASSWORD }}
       run: |
-        kubectl apply -f kubernetes/deployment.yaml
-        kubectl apply -f kubernetes/service.yaml
-        kubectl rollout status deployment/user-app-deployment
+        mvn deploy:deploy-file -Dfile=target/user-app-1.0-SNAPSHOT.jar -DrepositoryId=nexus-repo -Durl=$NEXUS_REPO_URL -Dusername=$NEXUS_USERNAME -Dpassword=$NEXUS_PASSWORD
+
+    # Step 4: Docker Build
+    - name: Build Docker Image
+      run: |
+        docker build -t <your-ecr-repo-url>/user-app:latest .
+
+    # Step 5: Trivy Image Scan
+    - name: Scan Docker Image with Trivy
+      run: |
+        trivy image <your-ecr-repo-url>/user-app:latest
+
+    # Step 6: Push Docker Image to ECR
+    - name: Push Docker Image to ECR
+      env:
+        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        AWS_REGION: us-east-1  # Set your region here
+      run: |
+        aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin <your-ecr-repo-url>
+        docker push <your-ecr-repo-url>/user-app:latest
+
+    # Step 7: Deploy on Kubernetes via Bastion Host
+    - name: Deploy on Kubernetes Cluster using Bastion Host
+      env:
+        BASTION_HOST: ${{ secrets.BASTION_HOST }}
+        KUBE_CONFIG: ${{ secrets.KUBE_CONFIG }}
+      run: |
+        ssh -i /path/to/your/bastion-key.pem ubuntu@$BASTION_HOST << EOF
+          kubectl --kubeconfig=$KUBE_CONFIG apply -f kubernetes/deployment.yaml
+          kubectl --kubeconfig=$KUBE_CONFIG apply -f kubernetes/service.yaml
+        EOF
